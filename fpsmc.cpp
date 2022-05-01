@@ -3,8 +3,6 @@
 #include <cmath>
 #include <pthread.h>
 #include <errno.h>
-#include <valarray>
-
 #include "main_psmc.h"
 #include "psmcreader.h"
 #include "msArg_toPars.h"
@@ -13,7 +11,6 @@
 #include "compute.h"
 #include "fpsmc.h"
 #include "splineEPsize.h"
-
 
 extern int nThreads;
 
@@ -33,8 +30,7 @@ typedef struct{
   int tk_l;
   double *epsize;
   double theta;
-  //NOTE RHO
-  double rho;
+  //double rho;
   //  double **trans;
 }shared_forhmm;
 
@@ -124,7 +120,7 @@ double qFunction2(const double *params ,const void *d){
 
 }
 
-void convert_pattern(const double *pars,double *pars2,int tofull, int slice){
+void convert_pattern(const double *pars,double *pars2,int tofull){
   if(tofull==0){
     int at=0;
     for(int i=0;i<remap_l;i++)
@@ -137,9 +133,6 @@ void convert_pattern(const double *pars,double *pars2,int tofull, int slice){
       at+=remap[i];
     }
   }
-  //NOTE: This works for 64 tk_l intervals (e.p.size) + rho, not the slicing bit
-  if(slice==0)
-      pars2[ops[0].tk_l]=pars[remap_l];
 }
 
 
@@ -148,18 +141,13 @@ void convert_pattern(const double *pars,double *pars2,int tofull, int slice){
 static int ncals=0;
 double qFunction_wrapper(const double *pars,const void *d){
   //  fprintf(stderr,"quad: %d\n",doQuadratic);//exit(0);
-
-  //NOTE: debug
-  //for(int i=0;i<ops[0].tk_l+1;i++)
-  //      fprintf(stderr,"before scaling:%d %f\n",i,pars[i]);
-
   ncals++;
-  double pars2[ops[0].tk_l+1];
+  double pars2[ops[0].tk_l];
   if(DOSPLINE==0)
-    convert_pattern(pars,pars2,0,0); //0,1,2,...,tk_l - epsize , tk_l+1 - rho
+    convert_pattern(pars,pars2,0);
   else{
     spl->convert(pars,pars2,0);
-    for(int i=0;i<ops[0].tk_l+1;i++){
+    for(int i=0;i<ops[0].tk_l;i++){
       if(pars2[i]<0)
 	 return -1000000000;
 
@@ -171,21 +159,11 @@ double qFunction_wrapper(const double *pars,const void *d){
     fprintf(stderr,"%f,",pars[i]);
   fprintf(stderr,"%f)= ",pars[2-1]);
 #endif
-  //NOTE: Add 0&&i<ops[0].
-  for(int i=0;0&&i<ops[0].tk_l+1;i++)
+  for(int i=0;0&&i<ops[0].tk_l;i++)
     fprintf(stderr,"after scaling:%d %f\n",i,pars2[i]);
   //  exit(0);
 
-  //Now splitting pars2 into pars[0:tk_l] (epsize) and pars[tk_l+1] (rho)
-  double pars3[ops[0].tk_l];
-  //This is not right since is works a bit strange probably do like this:
-  convert_pattern(pars,pars3,0,1); //This is done for 'epsize' argument in ComputeGlobalProbabilities
-
-  //fprintf(stderr,"pars2 BEFORE: %f\n",pars2[0]);
-  //ComputeGlobalProbabilities(ops[0].tk,ops[0].tk_l,ops[0].nP,pars2,ops[0].rho);
-  ComputeGlobalProbabilities(ops[0].tk,ops[0].tk_l,ops[0].nP,pars3,pars2[ops[0].tk_l]);
-  //fprintf(stderr,"pars2 AFTER: %f\n",pars2[0]);
-
+  ComputeGlobalProbabilities(ops[0].tk,ops[0].tk_l,ops[0].nP,pars2,ops[0].rho);
   if(doQuadratic){
     double calc_trans(int,int,double**);
     for(int i=0;i<ops[0].tk_l;i++)
@@ -246,19 +224,15 @@ void stoptimer(timer &t){
   t.tids[1]= ((float)(time(NULL) - t.t2))/60.0;
 }
 
-
 //tk is full
-double runoptim3(double *tk,int tk_l,double *epsize,double theta,double rho,int ndim,double &ret_qval){
+void runoptim3(double *tk,int tk_l,double *epsize,double theta,double rho,int ndim,double &ret_qval){
   clock_t t=clock();
   time_t t2=time(NULL);
   fprintf(stderr,"\t-> Starting Optimization ndim:%d\n",ndim);
 
-  //Here we convert epsize and rho to pars
   double pars[ndim];
-  if(DOSPLINE==0) {
-      convert_pattern(epsize, pars, 1, 1);
-      pars[ndim-1]=rho;
-  }
+  if(DOSPLINE==0)
+    convert_pattern(epsize,pars,1);
   else{
     spl->convert(epsize,pars,1);
   }
@@ -288,8 +262,8 @@ double runoptim3(double *tk,int tk_l,double *epsize,double theta,double rho,int 
       //fprintf(stderr,"gv[%d][%d/%d] bd[%d]:%d:(%f,%fd)\n",at++,i,ndim/2,i,nbd[i],lbd[i],ubd[i]);
     }
   }
+  
 
-  //NOTE: Где epsize?
   for(int i=0;i<nChr;i++){
     ops[i].nP = objs[i]->nP;
     ops[i].PP = objs[i]->PP;
@@ -305,69 +279,48 @@ double runoptim3(double *tk,int tk_l,double *epsize,double theta,double rho,int 
   }
   ncals=0;
   timer opt_timer = starttimer();
-
-  //NOTE: delete this
-  fprintf(stderr, "EPSIZE before optima:%f \n", pars[0]);
-  fprintf(stderr, "rho before optima:%f\n",pars[ndim-1]);
   //we are not optimizing llh but qfunction
   double max_qval = findmax_bfgs(ndim,pars,NULL,qFunction_wrapper,NULL,lbd,ubd,nbd,-1);
-  //NOTE: delete this
-  fprintf(stderr, "EPSIZE after optima:%f \n", pars[0]);
-  fprintf(stderr, "rho after optima:%f\n",pars[ndim-1]);
-
   stoptimer(opt_timer);
   fprintf(stdout,"MM\toptimization: (wall(min),cpu(min)):(%f,%f) maxqval:%f\n",opt_timer.tids[1],opt_timer.tids[0],max_qval);
   ret_qval=max_qval;
-  //NOTE: why 0&&i
   for(int i=0;0&&i<ndim;i++)
     fprintf(stderr,"optres[%d]:%f\n",i,pars[i]);
-  //NOTE: debug
-  fprintf(stderr,"CHECK LAST ELEM OF PARS:%f\n",pars[ndim-1]);
-  if(DOSPLINE==0) {
-      convert_pattern(pars, epsize, 0, 1);
-      rho=pars[ndim-1];
-  }
+  if(DOSPLINE==0)
+    convert_pattern(pars,epsize,0);
   else{
     spl->convert(pars,epsize,0);
   }
-  //NOTE: debug
-  fprintf(stderr,"CHECK RHO:%f\n",rho);
-
+  
   fprintf(stderr, "\t-> [RUNOPTIM3 TIME]:%s cpu-time used =  %.2f sec \n",__func__, (float)(clock() - t) / CLOCKS_PER_SEC);
   fprintf(stderr, "\t-> [RUNOPTIM3 Time]:%s walltime used =  %.2f sec \n",__func__, (float)(time(NULL) - t2));
  
   fflush(stdout);
   fflush(stderr);
 
-  return rho;
 }
 
 void *run_a_hmm(void *ptr){
   size_t at =(size_t) ptr;
-  //NOTE RHO
-  objs[at]->make_hmm(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,shmm.rho,&fws_bws[at % nThreads]);
+  objs[at]->make_hmm(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,&fws_bws[at % nThreads]);
   pthread_exit(NULL);
 }
 
-//rho to rho pointer
 void main_analysis_make_hmm(double *tk,int tk_l,double *epsize,double theta,double rho,double &ret_llh,double &ret_qval){
 
   fprintf(stderr,"\t-> [%s:%s:%d] nthreads:%d tk_l:%d theta:%f rho:%f\n",__FILE__,__FUNCTION__,__LINE__,nThreads,tk_l,theta,rho);
   shmm.tk=tk;
   shmm.tk_l=tk_l;
   shmm.theta=theta;
-  //NOTE RHO
-  shmm.rho=rho;
+  //  shmm.rho=rho;
   shmm.epsize=epsize;
 
   pthread_t thread[nThreads];
-  //NOTE RHO
-  objs[0]->make_hmm_pre(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,shmm.rho);
+  objs[0]->make_hmm_pre(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,rho);
   //  double qval =0;
   if(nThreads==1)
     for(int i=0;i<nChr;i++){
-        //NOTE RHO
-      objs[i]->make_hmm(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,shmm.rho,&fws_bws[i % nThreads]);
+      objs[i]->make_hmm(shmm.tk,shmm.tk_l,shmm.epsize,shmm.theta,&fws_bws[i % nThreads]);
   }else {
     int at=0;
     while(at<nChr){
@@ -404,7 +357,7 @@ void main_analysis_make_hmm(double *tk,int tk_l,double *epsize,double theta,doub
 #endif
 }
 
-//changing rho to the pointer
+
 //tk_l is dimension of transistionsspace ndim is size of dimension
 //tk is tk_l long, epsize is tk_l long
 void main_analysis(double *tk,int tk_l,double *epsize,double theta,double rho,char *pattern,int ndim,int nIter,double maxt){
@@ -449,22 +402,12 @@ void main_analysis(double *tk,int tk_l,double *epsize,double theta,double rho,ch
     double ret_llh,qval_optim,qval_hmm;
     fprintf(stderr,"----------------------------------------\n");
     qval_optim=qval_hmm=0;
-
-    //NOTE
-    //fprintf(stderr, "EPSIZE Before runoptim3: %f", epsize[0]);
-    //NOTE: ndim to ndim+1
-    //rho is not a pointer, so returning the value from the function instead
-    rho=runoptim3(tk,tk_l,epsize,theta,rho,ndim+1,qval_optim);
-    //NOTE
-    //fprintf(stderr, "EPSIZE After runoptim3: %f", epsize[0]);
-    //fprintf(stderr, "RHO After runoptim3: %f", rho);
-
+    runoptim3(tk,tk_l,epsize,theta,rho,ndim,qval_optim);    
+    
+    
     timer hmm_t = starttimer();
     main_analysis_make_hmm(tk,tk_l,epsize,theta,rho,ret_llh,qval_hmm);
     //    fprintf(stderr,"qval_hmm:%f\n",qval_hmm);
-    //NOTE delete or comment below
-    fprintf(stderr, "EPSIZE After make_hmm: %f", epsize[0]);
-
     stoptimer(hmm_t);
     if(ncals>0)
       fprintf(stdout,"IT\t%d\n",ncals);
@@ -565,9 +508,7 @@ int psmc_wrapper(args *pars,int blocksize) {
   fprintf(stderr,"tk_l:%d\n",tk_l);
 
   double theta=pars->par->TR[0];
-  //adding RHO pointer here
-  double rho = pars->par->TR[1];
-  double *rho_p;
+  double rho=pars->par->TR[1];
 
  
 
@@ -577,7 +518,6 @@ int psmc_wrapper(args *pars,int blocksize) {
   if(pars->init_theta!=-1)
     theta=pars->init_theta;
   if(pars->init_rho!=-1)
-      //Added &
     rho=pars->init_rho;
   
   assert(theta!=-1&&rho!=-1&&tk_l>0);
@@ -621,9 +561,7 @@ int psmc_wrapper(args *pars,int blocksize) {
     fws_bws[i].len = objs[i]->windows.size()+1;
   }
     
-  //rho_p now points at rho
-  //rho_p = &rho;
-
+  
   stoptimer(datareader_timer);
   fprintf(stdout,"MM\tfilereading took: (wall(min),cpu(min)):(%f,%f)\n",datareader_timer.tids[1],datareader_timer.tids[0]);
   main_analysis(tk,tk_l,epsize,theta,rho,pattern,ndim,pars->nIter,max_t);
